@@ -8,6 +8,8 @@
 //   framework maps an event handler wrapper to its attribute.
 //
 // The original text after `//!supplemental` is a supplemental output, mapped verbatim after a synthesized `export {};`.
+// A file that contains `//!invalid-mapping` gets a mapping that points outside its original text, which the compiler
+// rejects as a failed transform.
 import process from 'node:process'
 
 const PREFIX =
@@ -38,6 +40,9 @@ function transform(params) {
     const statement = `__on(() => ${name}());`
     mappings.push([bytes(text), bytes(statement), nameStart, bytes(name), 1])
     text += statement + '\n'
+  }
+  if (content.includes('//!invalid-mapping')) {
+    mappings.push([0, 1, bytes(content) + 1, 1, 0])
   }
   const result = { text, extension: '.ts', mappings }
   if (split !== -1) {

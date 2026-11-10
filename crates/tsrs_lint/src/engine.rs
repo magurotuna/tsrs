@@ -260,45 +260,73 @@ fn run_in_region(
         // the inferred program would parse it as TypeScript, so it is not linted.
     }
     drop(config_cache);
-    for (config_path, files) in programs {
-        let (config, diagnostics) = tsrs_tsoptions::get_parsed_command_line_of_config_file(
-            &config_path,
-            host.existing_options.as_ref(),
-            None,
-            host,
-            None,
-        );
-        let mut content_mappers_disabled = false;
-        let diagnostics =
-            without_run_external_code_error(diagnostics, &mut content_mappers_disabled);
-        if !diagnostics.is_empty() {
-            for diagnostic in diagnostics {
-                report_config_error(diagnostic, &config_path, false, writer)?;
+    'programs: for (config_path, files) in programs {
+        // A content mapper that fails at run time (it does not start, or it fails to transform too many files) is
+        // reported, and the program is built again without content mappers, as without `--runExternalCode`. The
+        // compiler stops using a mapper after its fifth failed file, so the files that were loaded before that point
+        // depend on the order of loading: linting that program would give different reports in each run.
+        let mut without_mappers = false;
+        let (program, mut content_mappers_disabled) = loop {
+            let existing_options =
+                if without_mappers { None } else { host.existing_options.as_ref() };
+            let (config, diagnostics) = tsrs_tsoptions::get_parsed_command_line_of_config_file(
+                &config_path,
+                existing_options,
+                None,
+                host,
+                None,
+            );
+            let mut content_mappers_disabled = false;
+            let diagnostics =
+                without_run_external_code_error(diagnostics, &mut content_mappers_disabled);
+            if !diagnostics.is_empty() {
+                for diagnostic in diagnostics {
+                    report_config_error(diagnostic, &config_path, false, writer)?;
+                }
+                continue 'programs;
             }
-            continue;
-        }
-        let mut config =
-            config.ok_or_else(|| format!("couldn't read tsconfig at {config_path}"))?;
-        config.errors = without_run_external_code_error(
-            std::mem::take(&mut config.errors),
-            &mut content_mappers_disabled,
-        );
-        if content_mappers_disabled && payload.report_notices {
-            report_content_mappers_disabled(&config_path, &config, writer)?;
-        }
-        if !config.errors.is_empty() && !options.suppress_program_diagnostics {
-            for diagnostic in &config.errors {
-                report_config_error(*diagnostic, &config_path, false, writer)?;
+            let mut config =
+                config.ok_or_else(|| format!("couldn't read tsconfig at {config_path}"))?;
+            config.errors = without_run_external_code_error(
+                std::mem::take(&mut config.errors),
+                &mut content_mappers_disabled,
+            );
+            if content_mappers_disabled && payload.report_notices && !without_mappers {
+                report_content_mappers_disabled(&config_path, &config, writer)?;
             }
-            continue;
-        }
-        let program = create_program(
-            config,
-            Arc::clone(&fs),
-            &tspath::get_directory_path(&config_path),
-            true,
-            Arc::clone(&regions.loaders),
-        );
+            if !config.errors.is_empty() && !options.suppress_program_diagnostics {
+                for diagnostic in &config.errors {
+                    report_config_error(*diagnostic, &config_path, false, writer)?;
+                }
+                continue 'programs;
+            }
+            let program = create_program(
+                config,
+                Arc::clone(&fs),
+                &tspath::get_directory_path(&config_path),
+                true,
+                Arc::clone(&regions.loaders),
+            );
+            if without_mappers {
+                break (program, content_mappers_disabled);
+            }
+            let mapper_failures: Vec<_> = program
+                .program
+                .get_program_diagnostics()
+                .into_iter()
+                .filter(|diagnostic| is_content_mapper_failure(*diagnostic))
+                .collect();
+            if mapper_failures.is_empty() {
+                break (program, content_mappers_disabled);
+            }
+            if !options.suppress_program_diagnostics {
+                for diagnostic in mapper_failures {
+                    report_config_error(diagnostic, &config_path, true, writer)?;
+                }
+            }
+            drop(program);
+            without_mappers = true;
+        };
         let program_ref = program.program;
         let diagnostics = without_run_external_code_error(
             program_ref.get_program_diagnostics(),
@@ -609,6 +637,14 @@ fn without_run_external_code_error(
     let diagnostics: Vec<_> = diagnostics.into_iter().filter(|d| d.code() != code).collect();
     *found |= diagnostics.len() != before;
     diagnostics
+}
+
+/// Whether a program diagnostic reports a content mapper that failed at run time: it could not be initialized, or it
+/// failed to transform too many files and is no longer used.
+fn is_content_mapper_failure(diagnostic: P<TsDiagnostic>) -> bool {
+    let code = diagnostic.code();
+    code == tsrs_diagnostics::THE_CONTENT_MAPPER_0_FAILED_1_TIMES_AND_WILL_NOT_BE_USED.code()
+        || code == tsrs_diagnostics::THE_CONTENT_MAPPER_0_COULD_NOT_BE_INITIALIZED.code()
 }
 
 fn report_content_mappers_disabled(

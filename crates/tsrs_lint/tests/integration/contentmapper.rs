@@ -22,6 +22,14 @@ fn has_node() -> bool {
 }
 
 fn project(name: &str, tsconfig: &str) -> PathBuf {
+    project_with_files(
+        name,
+        tsconfig,
+        &[("src/a.cmp", A_CMP), ("src/b.cmp", B_CMP), ("src/index.ts", INDEX_TS)],
+    )
+}
+
+fn project_with_files(name: &str, tsconfig: &str, files: &[(&str, &str)]) -> PathBuf {
     let base = std::env::current_dir().unwrap().join("target/lint-content-mapper").join(name);
     let _ = std::fs::remove_dir_all(&base);
     let mapper = base.join("node_modules/lint-mapper");
@@ -33,15 +41,31 @@ fn project(name: &str, tsconfig: &str) -> PathBuf {
         std::fs::copy(testdata.join(file), mapper.join(file)).unwrap();
     }
     std::fs::write(base.join("tsconfig.json"), tsconfig).unwrap();
-    for (file, text) in [("src/a.cmp", A_CMP), ("src/b.cmp", B_CMP), ("src/index.ts", INDEX_TS)] {
+    for (file, text) in files {
         std::fs::write(base.join(file), text).unwrap();
     }
     base
 }
 
 fn payload(base: &Path, report_semantic: bool, report_notices: bool) -> Value {
-    let files = ["src/a.cmp", "src/b.cmp", "src/index.ts"]
-        .map(|file| Value::String(base.join(file).to_string_lossy().into_owned()));
+    payload_for_files(
+        base,
+        &["src/a.cmp", "src/b.cmp", "src/index.ts"],
+        report_semantic,
+        report_notices,
+    )
+}
+
+fn payload_for_files(
+    base: &Path,
+    files: &[&str],
+    report_semantic: bool,
+    report_notices: bool,
+) -> Value {
+    let files: Vec<Value> = files
+        .iter()
+        .map(|file| Value::String(base.join(file).to_string_lossy().into_owned()))
+        .collect();
     let rules = ["no-floating-promises", "no-misused-promises"]
         .map(|rule| protocol::object([("name", Value::String(rule.into()))]));
     protocol::object([
@@ -49,7 +73,7 @@ fn payload(base: &Path, report_semantic: bool, report_notices: bool) -> Value {
         (
             "configs",
             Value::Array(vec![protocol::object([
-                ("file_paths", Value::Array(files.to_vec())),
+                ("file_paths", Value::Array(files)),
                 ("rules", Value::Array(rules.to_vec())),
             ])]),
         ),
@@ -205,4 +229,36 @@ fn files_that_no_mapper_transforms_are_skipped() {
         describe(&base, &frames),
         ["/src/index.ts no-floating-promises \"f()\" labels=1 fixes=0 suggestions=0"]
     );
+}
+
+#[test]
+fn a_failed_content_mapper_is_reported_and_the_program_is_linted_without_mappers() {
+    if !has_node() {
+        return;
+    }
+    // Five failed transforms disable the mapper (TS18070). Before this check, the program diagnostic stopped the
+    // whole program, so a mapper bug in one framework file removed all type-aware reports of the tsconfig. Linting
+    // the program as built would depend on which files were loaded before the fifth failure, so the program is built
+    // again without content mappers: no report in `a.cmp`, in each run.
+    let broken = "export const x = 1;\n//!invalid-mapping\n";
+    let mut files = vec![("src/a.cmp", A_CMP), ("src/index.ts", INDEX_TS)];
+    let names = ["src/b1.cmp", "src/b2.cmp", "src/b3.cmp", "src/b4.cmp", "src/b5.cmp"];
+    files.extend(names.iter().map(|name| (*name, broken)));
+    let base = project_with_files("failed-mapper", WITH_MAPPER, &files);
+    let mut paths = vec!["src/a.cmp", "src/index.ts"];
+    paths.extend(names);
+    for report_notices in [false, true] {
+        let (status, frames) =
+            run(&payload_for_files(&base, &paths, false, report_notices), &["--runExternalCode"]);
+        assert_eq!(status, 0, "{frames:?}");
+        assert_eq!(
+            describe(&base, &frames),
+            [
+                "/tsconfig.json tsconfig-error <no range> labels=0 fixes=0 suggestions=0",
+                "/src/index.ts no-floating-promises \"f()\" labels=1 fixes=0 suggestions=0",
+            ]
+        );
+        let help = string(field(field(&frames[0].1, "message"), "help"));
+        assert_eq!(help, "The content mapper 'lint-mapper' failed 5 times and will not be used.");
+    }
 }
