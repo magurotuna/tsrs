@@ -686,8 +686,10 @@ fn report_content_mappers_disabled(
 
 /// Moves a rule report on a content-mapped file to the original file, or drops it when it is on code that the mapper
 /// generated. The rule is Volar's for diagnostics (`SourceMap.findMatchingStartEnd` with `fallbackToAnyMatch`): both
-/// the start and the end must map into the original text, preferably through the same segment. A label that does not
-/// map is dropped, and the report is kept. Fixes and suggestions are dropped: their edits are on the virtual text.
+/// the start and the end must map into the original text, preferably through the same segment. In addition, a
+/// non-empty range must cover some mapped text: a range between two segments maps through their touching ends, but it
+/// covers only generated code. A label that does not map is dropped, and the report is kept. Fixes and suggestions are
+/// dropped: their edits are on the virtual text.
 fn to_original_file(
     mut diagnostic: Diagnostic,
     segments: &[Segment],
@@ -707,6 +709,15 @@ fn to_original_file(
 }
 
 fn original_lint_range(segments: &[Segment], range: Range) -> Option<Range> {
+    // The compiler accepts only sorted segments that do not overlap, so they are also sorted by their ends.
+    if range.end > range.pos
+        && !segments[segments.partition_point(|s| s.virtual_end <= range.pos)..]
+            .iter()
+            .take_while(|s| s.virtual_start < range.end)
+            .any(|s| s.virtual_end > s.virtual_start)
+    {
+        return None;
+    }
     for segment in segments_at(segments, range.pos) {
         if let (Some(pos), Some(end)) =
             (map_offset(segment, range.pos), map_offset(segment, range.end))

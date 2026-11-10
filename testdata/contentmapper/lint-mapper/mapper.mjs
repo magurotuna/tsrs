@@ -3,7 +3,8 @@
 // with Content-Length framing). Positions are UTF-8 byte offsets. The virtual text of a file is:
 //
 // - a synthesized prefix with an unresolved import, a floating promise and a helper `__on`,
-// - the original text up to a line `//!supplemental`, mapped verbatim,
+// - the original text up to a line `//!supplemental`, mapped verbatim, except that each `$gen` becomes the synthesized
+//   call `__gen()`, which no mapping covers, as a framework replaces a name with generated code,
 // - for each line `//!on NAME`, the synthesized statement `__on(() => NAME());`, mapped as one atom to NAME, as a
 //   framework maps an event handler wrapper to its attribute.
 //
@@ -31,9 +32,18 @@ function transform(params) {
   const content = params.content
   const split = content.indexOf(SUPPLEMENTAL_MARKER)
   const main = split === -1 ? content : content.slice(0, split)
-  let text = PREFIX + main
+  let text = PREFIX
   // [virtualStart, virtualLength, originalStart, originalLength, kind] with kind 0 = verbatim, 1 = atom
-  const mappings = main.length ? [[bytes(PREFIX), bytes(main), 0, bytes(main), 0]] : []
+  const mappings = []
+  for (let at = 0; ; ) {
+    const gen = main.indexOf('$gen', at)
+    const piece = main.slice(at, gen === -1 ? main.length : gen)
+    if (piece.length) mappings.push([bytes(text), bytes(piece), bytes(main.slice(0, at)), bytes(piece), 0])
+    text += piece
+    if (gen === -1) break
+    text += '__gen()'
+    at = gen + '$gen'.length
+  }
   for (const match of main.matchAll(/^\/\/!on (\w+)$/gm)) {
     const name = match[1]
     const nameStart = bytes(main.slice(0, match.index + '//!on '.length))

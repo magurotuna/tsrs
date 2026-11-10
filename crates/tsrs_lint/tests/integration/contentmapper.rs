@@ -262,3 +262,26 @@ fn a_failed_content_mapper_is_reported_and_the_program_is_linted_without_mappers
         assert_eq!(help, "The content mapper 'lint-mapper' failed 5 times and will not be used.");
     }
 }
+
+#[test]
+fn a_rule_report_on_generated_code_between_two_mappings_is_dropped() {
+    if !has_node() {
+        return;
+    }
+    // `$gen` becomes the synthesized `__gen()`, which no mapping covers. The report on `__gen()` starts where one
+    // mapping ends and ends where the next one starts, so both of its ends map, but it covers only generated code.
+    // The Vue mapper does this for `useTemplateRef("box")`: a generated `{} as any` replaces `"box"`, and
+    // `no-unsafe-type-assertion` reported it at `"box"`. A report that also covers mapped code is kept.
+    let base = project_with_files(
+        "generated-gap",
+        WITH_MAPPER,
+        &[("src/c.cmp", "export {};\n$gen;\n$gen.then(() => {});\n")],
+    );
+    let (status, frames) =
+        run(&payload_for_files(&base, &["src/c.cmp"], false, true), &["--runExternalCode"]);
+    assert_eq!(status, 0, "{frames:?}");
+    assert_eq!(
+        describe(&base, &frames),
+        ["/src/c.cmp no-floating-promises \"$gen.then(() => {})\" labels=1 fixes=0 suggestions=0"]
+    );
+}
