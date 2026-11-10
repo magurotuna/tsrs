@@ -266,7 +266,7 @@ fn run_in_region(
         // compiler stops using a mapper after its fifth failed file, so the files that were loaded before that point
         // depend on the order of loading: linting that program would give different reports in each run.
         let mut without_mappers = false;
-        let (program, mut content_mappers_disabled) = loop {
+        let (program, mut content_mappers_disabled, disabled_extensions) = loop {
             let existing_options =
                 if without_mappers { None } else { host.existing_options.as_ref() };
             let (config, diagnostics) = tsrs_tsoptions::get_parsed_command_line_of_config_file(
@@ -294,6 +294,11 @@ fn run_in_region(
             if content_mappers_disabled && payload.report_notices && !without_mappers {
                 report_content_mappers_disabled(&config_path, &config, writer)?;
             }
+            let disabled_extensions = if content_mappers_disabled {
+                content_mapper_extensions(&config)
+            } else {
+                Vec::new()
+            };
             if !config.errors.is_empty() && !options.suppress_program_diagnostics {
                 for diagnostic in &config.errors {
                     report_config_error(*diagnostic, &config_path, false, writer)?;
@@ -308,7 +313,7 @@ fn run_in_region(
                 Arc::clone(&regions.loaders),
             );
             if without_mappers {
-                break (program, content_mappers_disabled);
+                break (program, content_mappers_disabled, disabled_extensions);
             }
             let mapper_failures: Vec<_> = program
                 .program
@@ -317,7 +322,7 @@ fn run_in_region(
                 .filter(|diagnostic| is_content_mapper_failure(*diagnostic))
                 .collect();
             if mapper_failures.is_empty() {
-                break (program, content_mappers_disabled);
+                break (program, content_mappers_disabled, disabled_extensions);
             }
             if !options.suppress_program_diagnostics {
                 for diagnostic in mapper_failures {
@@ -328,9 +333,12 @@ fn run_in_region(
             without_mappers = true;
         };
         let program_ref = program.program;
-        let diagnostics = without_run_external_code_error(
-            program_ref.get_program_diagnostics(),
-            &mut content_mappers_disabled,
+        let diagnostics = without_unmapped_file_errors(
+            without_run_external_code_error(
+                program_ref.get_program_diagnostics(),
+                &mut content_mappers_disabled,
+            ),
+            &disabled_extensions,
         );
         if !diagnostics.is_empty() && !options.suppress_program_diagnostics {
             for diagnostic in diagnostics {
@@ -639,6 +647,30 @@ fn without_run_external_code_error(
     diagnostics
 }
 
+/// Without its content mappers, the compiler reports TS6054 (unsupported extension) for each file of a mapper extension
+/// that `files` lists. Such a file is skipped, as a file of that extension that `include` matches, and the rest of the
+/// program is linted.
+fn without_unmapped_file_errors(
+    diagnostics: Vec<P<TsDiagnostic>>,
+    extensions: &[String],
+) -> Vec<P<TsDiagnostic>> {
+    if extensions.is_empty() {
+        return diagnostics;
+    }
+    let code =
+        tsrs_diagnostics::FILE_0_HAS_AN_UNSUPPORTED_EXTENSION_THE_ONLY_SUPPORTED_EXTENSIONS_ARE_1
+            .code();
+    diagnostics
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.code() != code
+                || !diagnostic.message_args().first().is_some_and(|file| {
+                    extensions.iter().any(|extension| file.ends_with(extension.as_str()))
+                })
+        })
+        .collect()
+}
+
 /// Whether a program diagnostic reports a content mapper that failed at run time: it could not be initialized, or it
 /// failed to transform too many files and is no longer used.
 fn is_content_mapper_failure(diagnostic: P<TsDiagnostic>) -> bool {
@@ -647,11 +679,8 @@ fn is_content_mapper_failure(diagnostic: P<TsDiagnostic>) -> bool {
         || code == tsrs_diagnostics::THE_CONTENT_MAPPER_0_COULD_NOT_BE_INITIALIZED.code()
 }
 
-fn report_content_mappers_disabled(
-    config_path: &str,
-    config: &ParsedCommandLine,
-    writer: &mut dyn Write,
-) -> Result<(), String> {
+/// The file extensions of the content mappers that a tsconfig lists, in order, without duplicates.
+fn content_mapper_extensions(config: &ParsedCommandLine) -> Vec<String> {
     let mut extensions = Vec::new();
     if let Some(mappers) = config.raw.as_object().and_then(|raw| raw.get("contentMappers"))
         && let Some(mappers) = mappers.as_array()
@@ -672,6 +701,15 @@ fn report_content_mappers_disabled(
             }
         }
     }
+    extensions
+}
+
+fn report_content_mappers_disabled(
+    config_path: &str,
+    config: &ParsedCommandLine,
+    writer: &mut dyn Write,
+) -> Result<(), String> {
+    let extensions = content_mapper_extensions(config);
     protocol::write_message(
         writer,
         MessageType::Notice,

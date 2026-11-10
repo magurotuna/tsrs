@@ -285,3 +285,29 @@ fn a_rule_report_on_generated_code_between_two_mappings_is_dropped() {
         ["/src/c.cmp no-floating-promises \"$gen.then(() => {})\" labels=1 fixes=0 suggestions=0"]
     );
 }
+
+#[test]
+fn without_run_external_code_a_mapped_file_in_files_does_not_stop_its_program() {
+    if !has_node() {
+        return;
+    }
+    // Without its content mappers, the compiler reports TS6054 (unsupported extension) for a file of a mapper
+    // extension that `files` lists. That error stopped the whole program, so `index.ts` lost its report. Now the file
+    // is skipped, as a file that `include` matches.
+    let tsconfig = r#"{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext","target":"es2022","types":[]},"contentMappers":[{"package":"lint-mapper","extensions":[".cmp"]}],"files":["src/a.cmp","src/index.ts"]}"#;
+    let base = project_with_files(
+        "mapped-file-in-files",
+        tsconfig,
+        &[("src/a.cmp", A_CMP), ("src/index.ts", INDEX_TS)],
+    );
+    let (status, frames) =
+        run(&payload_for_files(&base, &["src/a.cmp", "src/index.ts"], false, true), &[]);
+    assert_eq!(status, 0, "{frames:?}");
+    assert_eq!(
+        describe(&base, &frames),
+        [
+            "notice content-mappers-require-run-external-code /tsconfig.json Array([String(\".cmp\")])",
+            "/src/index.ts no-floating-promises \"f()\" labels=1 fixes=0 suggestions=0",
+        ]
+    );
+}
