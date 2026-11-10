@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_lint::protocol;
 
-fn run(payload: &Value, flags: &[&str]) -> (i32, Vec<(u8, Value)>) {
+pub fn run(payload: &Value, flags: &[&str]) -> (i32, Vec<(u8, Value)>) {
     run_raw(&json::marshal(payload).unwrap(), flags)
 }
 
@@ -6994,15 +6994,23 @@ fn run_external_code_lints_content_mapped_projects() {
             .collect::<Vec<_>>()
     };
 
-    // Without the flag the tsconfig is rejected, so index.ts is not linted (a.vue, no longer in the tsconfig, falls back
-    // to the inferred program).
+    // Without the flag TypeScript drops the mappers and reports TS18068. tsrs-lint does not report that error and lints
+    // the program without the mappers: index.ts is checked (it cannot resolve a.vue), and a.vue, which no mapper
+    // transforms, is not linted.
     let without = diagnostics(&[], &[]);
-    let Value::Object(message) = &without[0]["message"] else { panic!("{without:?}") };
-    assert_eq!(message["id"], Value::String("tsconfig-error".into()));
-    let Value::String(help) = &message["help"] else { panic!("{without:?}") };
-    assert!(help.contains("'--runExternalCode'"), "{help}");
     assert!(
-        without.iter().all(|diagnostic| diagnostic["file_path"] != Value::String(files[1].clone())),
+        without.iter().all(|diagnostic| {
+            let Value::Object(message) = &diagnostic["message"] else { panic!("{diagnostic:?}") };
+            message["id"] != Value::String("tsconfig-error".into())
+        }),
+        "{without:?}"
+    );
+    assert!(
+        without.iter().all(|diagnostic| diagnostic["file_path"] != Value::String(files[0].clone())),
+        "{without:?}"
+    );
+    assert!(
+        without.iter().any(|diagnostic| diagnostic["file_path"] == Value::String(files[1].clone())),
         "{without:?}"
     );
 

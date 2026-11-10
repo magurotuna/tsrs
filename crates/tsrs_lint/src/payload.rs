@@ -10,6 +10,10 @@ pub struct Payload {
     pub source_overrides: OrderedMap<String, String>,
     pub report_syntactic: bool,
     pub report_semantic: bool,
+    /// oxlint reads notice frames (`MessageType::Notice`). An older oxlint fails on an unknown frame type, so notices are
+    /// sent only when the payload asks for them. A field, not a new version: tsgolint and older tsrs-lint reject any
+    /// version other than 2 but ignore unknown fields.
+    pub report_notices: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -96,6 +100,7 @@ fn deserialize_v2(value: &JsonMap) -> Result<Payload, String> {
         source_overrides,
         report_syntactic: boolean(value.get("report_syntactic"))?,
         report_semantic: boolean(value.get("report_semantic"))?,
+        report_notices: boolean(value.get("report_notices"))?,
     })
 }
 

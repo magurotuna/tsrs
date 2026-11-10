@@ -10,6 +10,9 @@ pub enum MessageType {
     Error = 0,
     Diagnostic = 1,
     Timing = 2,
+    /// Information for the user that is not a lint result, such as content mappers that did not run. oxlint prints it
+    /// apart from the diagnostics and does not count it as a warning.
+    Notice = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
