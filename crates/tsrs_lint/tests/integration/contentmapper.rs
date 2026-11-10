@@ -264,6 +264,42 @@ fn a_failed_content_mapper_is_reported_and_the_program_is_linted_without_mappers
 }
 
 #[test]
+fn a_failed_content_mapper_does_not_hide_other_program_errors() {
+    if !has_node() {
+        return;
+    }
+    // The rebuilt program has no content mappers, so it has no errors of their options either. Building it again
+    // after five failed transforms dropped the option error, and the program was linted with an invalid tsconfig.
+    // A program that has errors other than failed content mappers stops with all of them, as before.
+    let tsconfig = WITH_MAPPER.replace(
+        r#""extensions":[".cmp"]"#,
+        r#""extensions":[".cmp"],"options":{"unknownOption":true}"#,
+    );
+    let broken = "export const x = 1;\n//!invalid-mapping\n";
+    let mut files = vec![("src/index.ts", INDEX_TS)];
+    let names = ["src/b1.cmp", "src/b2.cmp", "src/b3.cmp", "src/b4.cmp", "src/b5.cmp"];
+    files.extend(names.iter().map(|name| (*name, broken)));
+    let base = project_with_files("failed-mapper-option-error", &tsconfig, &files);
+    let mut paths = vec!["src/index.ts"];
+    paths.extend(names);
+    let (status, frames) =
+        run(&payload_for_files(&base, &paths, false, true), &["--runExternalCode"]);
+    assert_eq!(status, 0, "{frames:?}");
+    let helps: Vec<_> = frames
+        .iter()
+        .map(|(_, value)| string(field(field(value, "message"), "help")).to_owned())
+        .collect();
+    assert_eq!(frames.len(), 2, "{helps:?}");
+    assert!(helps.iter().any(|help| help.contains("unknownOption")), "{helps:?}");
+    assert!(
+        helps.contains(
+            &"The content mapper 'lint-mapper' failed 5 times and will not be used.".to_owned()
+        ),
+        "{helps:?}"
+    );
+}
+
+#[test]
 fn a_rule_report_on_generated_code_between_two_mappings_is_dropped() {
     if !has_node() {
         return;

@@ -72,9 +72,15 @@ function handle(request) {
     case 'initialize':
       respond({ id: request.id, result: { positionEncoding: 'utf-8', diagnosticSource: 'lint' } })
       break
-    case 'openProject':
-      respond({ id: request.id, result: {} })
+    case 'openProject': {
+      // The option `unknownOption` gets an option diagnostic, as a framework rejects an option that it does not know.
+      const optionDiagnostics =
+        request.params.options?.unknownOption === undefined
+          ? []
+          : [{ path: ['unknownOption'], messageText: "Unknown option 'unknownOption'.", code: 1 }]
+      respond({ id: request.id, result: { optionDiagnostics } })
       break
+    }
     case 'closeProject':
       respond({ id: request.id, result: null })
       break

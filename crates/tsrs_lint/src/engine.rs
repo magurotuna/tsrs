@@ -315,13 +315,12 @@ fn run_in_region(
             if without_mappers {
                 break (program, content_mappers_disabled, disabled_extensions);
             }
-            let mapper_failures: Vec<_> = program
-                .program
-                .get_program_diagnostics()
-                .into_iter()
-                .filter(|diagnostic| is_content_mapper_failure(*diagnostic))
-                .collect();
-            if mapper_failures.is_empty() {
+            // Build the program again only if each error is a failed content mapper. The rebuilt program has no
+            // errors of the mappers' options, so a program with other errors stops below with all of them.
+            let mapper_failures = program.program.get_program_diagnostics();
+            if mapper_failures.is_empty()
+                || !mapper_failures.iter().all(|diagnostic| is_content_mapper_failure(*diagnostic))
+            {
                 break (program, content_mappers_disabled, disabled_extensions);
             }
             if !options.suppress_program_diagnostics {
