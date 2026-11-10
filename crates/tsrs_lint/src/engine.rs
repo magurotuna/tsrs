@@ -506,9 +506,21 @@ fn run_program(
     }
     if let Some(type_checked) = whole {
         for &file in program.get_source_files() {
+            // A supplemental output goes with its canonical file, so it is reported by the program that reports that
+            // file: for a file that oxlint sent, the program that the file maps to.
+            if file.is_content_mapper_supplemental() {
+                continue;
+            }
             if !program.skip_type_checking(file, false) && type_checked.insert(file.path().clone())
             {
                 work.push((file, &[]));
+                for &supplemental in file.supplemental_source_files() {
+                    if !program.skip_type_checking(supplemental, false)
+                        && type_checked.insert(supplemental.path().clone())
+                    {
+                        work.push((supplemental, &[]));
+                    }
+                }
             }
         }
     }

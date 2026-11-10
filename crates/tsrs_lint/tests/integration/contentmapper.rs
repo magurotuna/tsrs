@@ -34,7 +34,7 @@ fn project_with_files(name: &str, tsconfig: &str, files: &[(&str, &str)]) -> Pat
     let _ = std::fs::remove_dir_all(&base);
     let mapper = base.join("node_modules/lint-mapper");
     std::fs::create_dir_all(&mapper).unwrap();
-    std::fs::create_dir_all(base.join("src")).unwrap();
+    std::fs::create_dir_all(base.join("src/child")).unwrap();
     let testdata =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/contentmapper/lint-mapper");
     for file in ["package.json", "mapper.mjs"] {
@@ -308,6 +308,39 @@ fn without_run_external_code_a_mapped_file_in_files_does_not_stop_its_program() 
         [
             "notice content-mappers-require-run-external-code /tsconfig.json Array([String(\".cmp\")])",
             "/src/index.ts no-floating-promises \"f()\" labels=1 fixes=0 suggestions=0",
+        ]
+    );
+}
+
+#[test]
+fn a_supplemental_output_is_type_checked_once_across_programs() {
+    if !has_node() {
+        return;
+    }
+    // `src/child/tsconfig.json` sorts before `tsconfig.json`, so its program runs first. It imports `b.cmp`, which
+    // the root program owns. The whole-program pass of the child program skipped `b.cmp` but checked its
+    // supplemental output, and the root program checked that output again: the type error was reported twice.
+    let child = r#"{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext","target":"es2022","types":[]},"contentMappers":[{"package":"lint-mapper","extensions":[".cmp"]}],"include":["."]}"#;
+    let root = r#"{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext","target":"es2022","types":[]},"contentMappers":[{"package":"lint-mapper","extensions":[".cmp"]}],"files":["src/b.cmp"]}"#;
+    let base = project_with_files(
+        "supplemental-once",
+        root,
+        &[
+            ("src/b.cmp", "export const x = 1;\n//!supplemental\nexport const y: string = 1;\n"),
+            ("src/child/tsconfig.json", child),
+            ("src/child/index.ts", "import { x } from \"../b.cmp\";\nexport const z = x;\n"),
+        ],
+    );
+    let (status, frames) = run(
+        &payload_for_files(&base, &["src/b.cmp", "src/child/index.ts"], true, true),
+        &["--runExternalCode"],
+    );
+    assert_eq!(status, 0, "{frames:?}");
+    assert_eq!(
+        describe(&base, &frames),
+        [
+            "/src/b.cmp TS2882 \"\" labels=0 fixes=0 suggestions=0",
+            "/src/b.cmp TS2322 \"y\" labels=0 fixes=0 suggestions=0",
         ]
     );
 }
