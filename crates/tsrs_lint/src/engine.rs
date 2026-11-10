@@ -765,12 +765,16 @@ fn original_lint_range(segments: &[Segment], range: Range) -> Option<Range> {
         }
     }
     // A start that is also the end of the previous segment maps through the next one first, and an end that is also
-    // the start of the next segment maps through the previous one first, as Volar prefers.
-    let pos = segments_at(segments, range.pos).rev().find_map(|s| map_offset(s, range.pos))?;
-    let end = segments_at(segments, range.end)
-        .filter_map(|s| map_offset(s, range.end))
-        .find(|&end| end >= pos)?;
-    Some(Range { pos, end })
+    // the start of the next segment maps through the previous one first, as Volar prefers. As in Volar's
+    // `fallbackToAnyMatch`, the next mapped start is tried when no mapped end comes after a start.
+    segments_at(segments, range.pos).rev().filter_map(|s| map_offset(s, range.pos)).find_map(
+        |pos| {
+            segments_at(segments, range.end)
+                .filter_map(|s| map_offset(s, range.end))
+                .find(|&end| end >= pos)
+                .map(|end| Range { pos, end })
+        },
+    )
 }
 
 /// The segments whose virtual range contains `offset`, ends included, in order.
@@ -1132,5 +1136,48 @@ fn compute_config_file_name(file: &str, skip_directory: bool, host: &ConfigHost)
         directory = parent;
         skip_tsconfig = false;
         skip_jsconfig = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tsrs_spanmap::{Kind, Segment};
+
+    use super::original_lint_range;
+    use crate::protocol::Range;
+
+    fn segment(
+        virtual_start: u32,
+        virtual_end: u32,
+        original_start: u32,
+        original_end: u32,
+        kind: Kind,
+    ) -> Segment {
+        Segment {
+            virtual_start,
+            virtual_end,
+            original_start,
+            original_end,
+            kind,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_fallback_tries_each_mapped_start() {
+        // original "f()\nf", virtual "declare function f(): Promise<void>;\nf();\n": a generated atom maps to the empty
+        // range at 0, the `f` of `f()` maps to the `f` at 4, and `()` maps to the `()` at 1. The report on `f()` at
+        // virtual [37, 40) starts where the atom ends and where the `f` segment starts. Through the `f` segment, the
+        // start is 4, after every mapped end, so the start through the atom (0) is used, as Volar's
+        // `fallbackToAnyMatch` does.
+        let segments = [
+            segment(0, 37, 0, 0, Kind::ATOM),
+            segment(37, 38, 4, 5, Kind::VERBATIM),
+            segment(38, 40, 1, 3, Kind::VERBATIM),
+        ];
+        assert_eq!(
+            original_lint_range(&segments, Range { pos: 37, end: 40 }),
+            Some(Range { pos: 0, end: 3 })
+        );
     }
 }
