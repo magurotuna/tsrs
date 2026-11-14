@@ -323,6 +323,36 @@ fn a_rule_report_on_generated_code_between_two_mappings_is_dropped() {
 }
 
 #[test]
+fn a_rule_report_that_starts_in_an_ignore_directive_is_dropped() {
+    if !has_node() {
+        return;
+    }
+    // The compiler drops type errors that start in the virtual range of a mapper's Ignore directive, and tsrs-lint
+    // drops rule reports there too. `//!call load` and `//!ignored-call load` give the same mapped statement
+    // `load();`, and only the second one has an Ignore directive, as the Vue mapper marks the generated slot
+    // destructuring of a component: `unbound-method` reported it on the `<` of each component tag. A user directive
+    // (`//!ignore-next-line`, like `@vue-ignore`) also drops the rule reports on the next line.
+    let base = project_with_files(
+        "ignore-directives",
+        WITH_MAPPER,
+        &[(
+            "src/d.cmp",
+            "async function load(): Promise<void> {}\n//!call load\n//!ignored-call load\n//!ignore-next-line\nload();\nload();\n",
+        )],
+    );
+    let (status, frames) =
+        run(&payload_for_files(&base, &["src/d.cmp"], false, true), &["--runExternalCode"]);
+    assert_eq!(status, 0, "{frames:?}");
+    assert_eq!(
+        describe(&base, &frames),
+        [
+            "/src/d.cmp no-floating-promises \"load()\" labels=1 fixes=0 suggestions=0",
+            "/src/d.cmp no-floating-promises \"load\" labels=1 fixes=0 suggestions=0",
+        ]
+    );
+}
+
+#[test]
 fn without_run_external_code_a_mapped_file_in_files_does_not_stop_its_program() {
     if !has_node() {
         return;

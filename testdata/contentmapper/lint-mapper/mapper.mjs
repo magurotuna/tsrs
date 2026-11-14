@@ -6,7 +6,13 @@
 // - the original text up to a line `//!supplemental`, mapped verbatim, except that each `$gen` becomes the synthesized
 //   call `__gen()`, which no mapping covers, as a framework replaces a name with generated code,
 // - for each line `//!on NAME`, the synthesized statement `__on(() => NAME());`, mapped as one atom to NAME, as a
-//   framework maps an event handler wrapper to its attribute.
+//   framework maps an event handler wrapper to its attribute,
+// - for each line `//!call NAME`, the synthesized statement `NAME();`, with `NAME()` mapped as one atom to NAME,
+// - for each line `//!ignored-call NAME`, the same statement and an Ignore directive over it, as a framework marks
+//   generated code without a verified mapping (the Vue mapper does this for the slots of a component).
+//
+// A line `//!ignore-next-line` gets an Ignore directive over the virtual text of the next line, as a user directive
+// such as Vue's `@vue-ignore` covers the next element.
 //
 // The original text after `//!supplemental` is a supplemental output, mapped verbatim after a synthesized `export {};`.
 // A file that contains `//!invalid-mapping` gets a mapping that points outside its original text, which the compiler
@@ -51,10 +57,34 @@ function transform(params) {
     mappings.push([bytes(text), bytes(statement), nameStart, bytes(name), 1])
     text += statement + '\n'
   }
+  // [originalStart, originalLength, virtualStart, virtualEnd, policy] with policy 0 = ignore
+  const directives = []
+  for (const match of main.matchAll(/^\/\/!(call|ignored-call) (\w+)$/gm)) {
+    const name = match[2]
+    const nameStart = bytes(main.slice(0, match.index + `//!${match[1]} `.length))
+    const call = `${name}()`
+    const start = bytes(text)
+    mappings.push([start, bytes(call), nameStart, bytes(name), 1])
+    if (match[1] === 'ignored-call') directives.push([0, 0, start, start + bytes(call) + 1, 0])
+    text += call + ';\n'
+  }
+  const toVirtual = (original) => {
+    const mapping = mappings.find(
+      ([, length, start, , kind]) => kind === 0 && start <= original && original < start + length,
+    )
+    return mapping[0] + original - mapping[2]
+  }
+  for (const match of main.matchAll(/^\/\/!ignore-next-line\n(.*)$/gm)) {
+    const lineStart = bytes(main.slice(0, match.index + '//!ignore-next-line\n'.length))
+    const virtualStart = toVirtual(lineStart)
+    const markerStart = bytes(main.slice(0, match.index))
+    directives.push([markerStart, bytes('//!ignore-next-line'), virtualStart, virtualStart + bytes(match[1]), 0])
+  }
   if (content.includes('//!invalid-mapping')) {
     mappings.push([0, 1, bytes(content) + 1, 1, 0])
   }
   const result = { text, extension: '.ts', mappings }
+  if (directives.length) result.diagnosticDirectives = { unusedExpectDirectiveDiagnostics: [], directives }
   if (split !== -1) {
     const rest = content.slice(split + SUPPLEMENTAL_MARKER.length)
     const header = 'export {};\n'

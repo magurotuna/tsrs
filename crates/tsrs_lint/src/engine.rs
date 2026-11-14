@@ -604,10 +604,21 @@ fn lint_one(
         return Ok(());
     };
     let segments = span_map.segments();
+    let ignored = ignored_virtual_ranges(file);
     let debug_mapping = std::env::var_os("TSRS_LINT_DEBUG_MAPPING").is_some();
     for diagnostic in lint_file(program, file, configured, options, checker, timings)? {
         if debug_mapping {
             print_mapping(&diagnostic, file.text(), &segments);
+        }
+        if let Some(&(pos, end)) = diagnostic.range.and_then(|range| {
+            ignored.iter().find(|&&(pos, end)| range.pos >= pos && range.pos < end)
+        }) {
+            if debug_mapping {
+                eprintln!(
+                    "tsrs-lint mapping: dropped by an Ignore directive on virtual [{pos}, {end})"
+                );
+            }
+            continue;
         }
         if let Some(diagnostic) = to_original_file(diagnostic, &segments, file) {
             emit(&diagnostic, output)?;
@@ -731,6 +742,21 @@ fn report_content_mappers_disabled(
         ]),
     )
     .map_err(|e| e.to_string())
+}
+
+/// The virtual ranges of the mapper's Ignore directives. A mapper sends these for the directives that a user writes,
+/// such as Vue's `@vue-ignore`, and for generated code without a verified mapping. The compiler drops a type error
+/// that starts in one of these ranges (`apply_content_mapper_diagnostic_directives`), and a rule report that starts in
+/// one is dropped too. Expect directives (`@vue-expect-error`) count only type errors as their use, so they do not
+/// drop rule reports.
+fn ignored_virtual_ranges(file: P<SourceFile>) -> Vec<(u32, u32)> {
+    file.diagnostic_directives()
+        .iter()
+        .filter(|directive| directive.policy == tsrs_ast::MappedDiagnosticDirectivePolicy::Ignore)
+        .filter_map(|directive| {
+            Some((directive.virtual_range.source_pos()?, directive.virtual_range.source_end()?))
+        })
+        .collect()
 }
 
 /// Moves a rule report on a content-mapped file to the original file, or drops it when it is on code that the mapper
