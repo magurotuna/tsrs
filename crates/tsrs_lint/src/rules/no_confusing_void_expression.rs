@@ -105,6 +105,18 @@ fn is_void_returning_function(context: &mut RuleContext<'_>, node: P<Node>) -> b
     })
 }
 
+/// Whether a content mapper wrote the statement that makes `ancestor` an invalid place for a void expression, when the
+/// void expression itself can be the user's text. The Vue mapper turns `@click="select(item)"` into an arrow function
+/// with `return (select(item));`, and astro2tsx turns a top-level `return` of the frontmatter into `throw`. Only the
+/// keyword of a `return` or `throw` statement is checked. Other ancestors, such as a generated `if (...)` for `v-if`,
+/// are places that the user put the expression in. The `=>` of an arrow function is not checked either: the Vue
+/// mapper maps a component prop such as `:formatter="(value) => format(value)"` as one atom, so the `=>` that the user
+/// wrote is inside an atom.
+fn is_mapper_written_context(context: &RuleContext<'_>, ancestor: P<Node>) -> bool {
+    matches!(ancestor.kind(), Kind::ReturnStatement | Kind::ThrowStatement)
+        && context.is_first_token_mapper_written(ancestor)
+}
+
 fn is_final_return(node: P<Node>) -> bool {
     let Some(block) = node.parent() else {
         return false;
@@ -192,6 +204,9 @@ impl NoConfusingVoidExpression {
         let Some(ancestor) = self.find_invalid_ancestor(node) else {
             return;
         };
+        if is_mapper_written_context(context, ancestor) {
+            return;
+        }
         if !can_fix(context, node) {
             return;
         }

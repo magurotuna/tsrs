@@ -380,7 +380,9 @@ fn a_rule_skips_a_throw_that_the_mapper_wrote() {
     // the original file: `only-throw-error` reported `{ status: 404 }` and `log()`. For `$return;` the mapper writes
     // `throw undefined`, and the report on the statement mapped to `$return;` through the end of the mapping before
     // it. The verdict of the rule depends on a `throw` keyword that the user did not write, so the rule asks
-    // `RuleContext::is_first_token_mapper_written`. A `throw` that the user wrote is still reported.
+    // `RuleContext::is_first_token_mapper_written`. The same holds for `no-confusing-void-expression` on `log()`: the
+    // "other expression" that uses the void value is the `throw` that the mapper wrote. A `throw` that the user wrote
+    // is still reported.
     let base = project_with_files(
         "mapper-written-throw",
         WITH_MAPPER,
@@ -389,12 +391,47 @@ fn a_rule_skips_a_throw_that_the_mapper_wrote() {
             "declare const id: string | undefined;\nfunction log(): void {}\nif (!id) {\n  $return { status: 404 };\n}\nif (id === 'skip') {\n  $return;\n}\nif (id === 'log') {\n  $return log();\n}\nexport function user(): never {\n  throw 'a string';\n}\n",
         )],
     );
-    let payload = payload_for_rules(&base, &["src/e.cmp"], &["only-throw-error"], false, true);
+    let payload = payload_for_rules(
+        &base,
+        &["src/e.cmp"],
+        &["only-throw-error", "no-confusing-void-expression"],
+        false,
+        true,
+    );
     let (status, frames) = run(&payload, &["--runExternalCode"]);
     assert_eq!(status, 0, "{frames:?}");
     assert_eq!(
         describe(&base, &frames),
         ["/src/e.cmp only-throw-error \"'a string'\" labels=0 fixes=0 suggestions=0"]
+    );
+}
+
+#[test]
+fn a_rule_skips_a_return_that_the_mapper_wrote() {
+    if !has_node() {
+        return;
+    }
+    // `//!handler second()` becomes `__on(() => { return (second()); });`. `second()` is mapped verbatim, and the code
+    // around it is mapped as two atoms to `handler`, as the Vue mapper wraps the inline handler of
+    // `@click="select(item)"` and maps the wrapper to the tag name. `no-confusing-void-expression` reported the user's
+    // `second()` as a returned void expression, but the user wrote no `return`. The keyword is inside an atom, not in
+    // a gap between the mappings: text inside an atom is also text that the mapper wrote. A `return` that the user
+    // wrote is still reported.
+    let base = project_with_files(
+        "mapper-written-return",
+        WITH_MAPPER,
+        &[(
+            "src/f.cmp",
+            "function first(): void {}\nfunction second(): void {}\nexport function user(): void {\n  return first();\n}\n//!handler second()\n",
+        )],
+    );
+    let payload =
+        payload_for_rules(&base, &["src/f.cmp"], &["no-confusing-void-expression"], false, true);
+    let (status, frames) = run(&payload, &["--runExternalCode"]);
+    assert_eq!(status, 0, "{frames:?}");
+    assert_eq!(
+        describe(&base, &frames),
+        ["/src/f.cmp no-confusing-void-expression \"first()\" labels=0 fixes=0 suggestions=0"]
     );
 }
 

@@ -43,7 +43,8 @@ impl RuleContext<'_> {
     /// The engine checks only the report range (`original_lint_range`). Pass the range of one token: a range that
     /// has one verbatim byte is not mapper-written. This is `false` for each range of a file without a content
     /// mapper, so a rule does not need to check the file kind first. Do not use it for every keyword: a mapper also
-    /// writes keywords for constructs that the user wrote, such as the `if` of a Vue `v-if`.
+    /// writes keywords for constructs that the user wrote, such as the `if` of a Vue `v-if`. Text inside an atom can
+    /// also be the user's: the Vue mapper maps the whole value of a component prop as one atom to the prop name.
     pub fn is_mapper_written(&self, range: Range) -> bool {
         self.segments.is_some_and(|segments| engine::is_mapper_written(segments, range))
     }

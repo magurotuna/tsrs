@@ -9,6 +9,9 @@
 //   top-level `return` of the frontmatter,
 // - for each line `//!on NAME`, the synthesized statement `__on(() => NAME());`, mapped as one atom to NAME, as a
 //   framework maps an event handler wrapper to its attribute,
+// - for each line `//!handler EXPRESSION`, the synthesized statement `__on(() => { return (EXPRESSION); });`, with
+//   EXPRESSION mapped verbatim and the code before and after it mapped as two atoms to `handler`, as the Vue mapper
+//   wraps an inline event handler and maps the wrapper to the tag name,
 // - for each line `//!call NAME`, the synthesized statement `NAME();`, with `NAME()` mapped as one atom to NAME,
 // - for each line `//!ignored-call NAME`, the same statement and an Ignore directive over it, as a framework marks
 //   generated code without a verified mapping (the Vue mapper does this for the slots of a component).
@@ -58,6 +61,19 @@ function transform(params) {
     const statement = `__on(() => ${name}());`
     mappings.push([bytes(text), bytes(statement), nameStart, bytes(name), 1])
     text += statement + '\n'
+  }
+  for (const match of main.matchAll(/^\/\/!handler (.+)$/gm)) {
+    const expression = match[1]
+    const markerStart = bytes(main.slice(0, match.index + '//!'.length))
+    const expressionStart = bytes(main.slice(0, match.index + '//!handler '.length))
+    const before = '__on(() => { return ('
+    const after = '); });'
+    mappings.push([bytes(text), bytes(before), markerStart, bytes('handler'), 1])
+    text += before
+    mappings.push([bytes(text), bytes(expression), expressionStart, bytes(expression), 0])
+    text += expression
+    mappings.push([bytes(text), bytes(after), markerStart, bytes('handler'), 1])
+    text += after + '\n'
   }
   // [originalStart, originalLength, virtualStart, virtualEnd, policy] with policy 0 = ignore
   const directives = []
