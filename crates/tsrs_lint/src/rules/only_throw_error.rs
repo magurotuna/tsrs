@@ -116,6 +116,12 @@ impl Rule for OnlyThrowError {
     }
 
     fn visit(&mut self, _: Listener, node: P<Node>, context: &mut RuleContext<'_>) {
+        // A content mapper can write a `throw` that the user did not write: astro2tsx turns each top-level `return`
+        // of the frontmatter into `throw`, because `return` is an error at the top level of a module. The returned
+        // expression is still the user's text, so a report on it maps into the original file.
+        if context.is_first_token_mapper_written(node) {
+            return;
+        }
         let expression = node.expression().expect("throw expression");
         let t = context.checker.get_type_at_location(expression);
         if type_matches_some_specifier(t, &self.allow, context.program) {

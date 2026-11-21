@@ -4,8 +4,9 @@ use tsrs_ast::{Kind, Node, SourceFile};
 use tsrs_checker::Checker;
 use tsrs_compiler::Program;
 use tsrs_core::P;
+use tsrs_spanmap::Segment;
 
-use crate::engine::Options;
+use crate::engine::{self, Options};
 use crate::protocol::{Diagnostic, Fix, Range, RuleMessage, Suggestion};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,9 +26,53 @@ pub struct RuleContext<'a> {
     pub rule_name: &'a str,
     pub options: Options,
     pub diagnostics: &'a mut Vec<Diagnostic>,
+    /// The span map segments of a content-mapped file, sorted by their virtual start. `None` for a file that no
+    /// content mapper produced.
+    pub segments: Option<&'a [Segment]>,
 }
 
 impl RuleContext<'_> {
+    /// Whether a content mapper wrote all of the text in `range` of the linted text: the file is content-mapped, the
+    /// range is not empty, no part of it is a verbatim copy of the original file, and it contains no whole atom or
+    /// alias that stands for original text (`engine::is_mapper_written`). Text in a gap between the segments, such as
+    /// the `throw` that replaces a `return`, and text inside a larger atom, such as an event handler wrapper that is
+    /// attributed to its tag name, is text that the mapper wrote. Ranges are half-open, so a segment that only touches
+    /// an end of the range does not count, and neither does an empty segment.
+    ///
+    /// A rule calls this for the syntax that its verdict depends on when that syntax is outside the report range.
+    /// The engine checks only the report range (`original_lint_range`). Pass the range of one token: a range that
+    /// has one verbatim byte is not mapper-written. This is `false` for each range of a file without a content
+    /// mapper, so a rule does not need to check the file kind first. Do not use it for every keyword: a mapper also
+    /// writes keywords for constructs that the user wrote, such as the `if` of a Vue `v-if`.
+    pub fn is_mapper_written(&self, range: Range) -> bool {
+        self.segments.is_some_and(|segments| engine::is_mapper_written(segments, range))
+    }
+
+    /// Whether a content mapper wrote the first token of `node`: the keyword of a statement such as `throw` or
+    /// `return`, or a token node such as the `=>` of an arrow function. Leading trivia is skipped, because a mapper
+    /// can keep the user's indentation and comments in front of a keyword that it wrote.
+    pub fn is_first_token_mapper_written(&self, node: P<Node>) -> bool {
+        if self.segments.is_none() {
+            return false;
+        }
+        let range = first_token_range(self.source_file, node);
+        let mapper_written = self.is_mapper_written(range);
+        // `TSRS_LINT_DEBUG_MAPPING`, as in `engine::lint_one`: a skipped node gives no report that could be printed.
+        if mapper_written && std::env::var_os("TSRS_LINT_DEBUG_MAPPING").is_some() {
+            eprintln!(
+                "tsrs-lint mapping: {} skipped a node: the mapper wrote its first token on virtual [{}, {}) {:?}",
+                self.rule_name,
+                range.pos,
+                range.end,
+                self.source_file
+                    .text()
+                    .get(range.pos as usize..range.end as usize)
+                    .unwrap_or_default(),
+            );
+        }
+        mapper_written
+    }
+
     pub fn report_range(&mut self, range: Range, message: RuleMessage) {
         self.report_diagnostic(Diagnostic { range: Some(range), message, ..Default::default() });
     }
@@ -91,6 +136,15 @@ pub fn trim_node_range(file: P<SourceFile>, node: P<Node>) -> Range {
         .unwrap(),
         end: node.end().expect_source("lint nodes are parsed source nodes"),
     }
+}
+
+/// The range of the first token of `node`, without its leading trivia.
+pub fn first_token_range(file: P<SourceFile>, node: P<Node>) -> Range {
+    let token = tsrs_scanner::get_range_of_token_at_position(
+        file,
+        node.pos().expect_source("lint nodes are parsed source nodes"),
+    );
+    Range { pos: token.source_pos().unwrap(), end: token.source_end().unwrap() }
 }
 
 pub fn replace_node(file: P<SourceFile>, node: P<Node>, text: String) -> Fix {

@@ -62,19 +62,37 @@ fn payload_for_files(
     report_semantic: bool,
     report_notices: bool,
 ) -> Value {
+    payload_for_rules(
+        base,
+        files,
+        &["no-floating-promises", "no-misused-promises"],
+        report_semantic,
+        report_notices,
+    )
+}
+
+fn payload_for_rules(
+    base: &Path,
+    files: &[&str],
+    rules: &[&str],
+    report_semantic: bool,
+    report_notices: bool,
+) -> Value {
     let files: Vec<Value> = files
         .iter()
         .map(|file| Value::String(base.join(file).to_string_lossy().into_owned()))
         .collect();
-    let rules = ["no-floating-promises", "no-misused-promises"]
-        .map(|rule| protocol::object([("name", Value::String(rule.into()))]));
+    let rules: Vec<Value> = rules
+        .iter()
+        .map(|rule| protocol::object([("name", Value::String((*rule).into()))]))
+        .collect();
     protocol::object([
         ("version", Value::Integer(2)),
         (
             "configs",
             Value::Array(vec![protocol::object([
                 ("file_paths", Value::Array(files)),
-                ("rules", Value::Array(rules.to_vec())),
+                ("rules", Value::Array(rules)),
             ])]),
         ),
         ("report_semantic", Value::Bool(report_semantic)),
@@ -349,6 +367,34 @@ fn a_rule_report_that_starts_in_an_ignore_directive_is_dropped() {
             "/src/d.cmp no-floating-promises \"load()\" labels=1 fixes=0 suggestions=0",
             "/src/d.cmp no-floating-promises \"load\" labels=1 fixes=0 suggestions=0",
         ]
+    );
+}
+
+#[test]
+fn a_rule_skips_a_throw_that_the_mapper_wrote() {
+    if !has_node() {
+        return;
+    }
+    // `$return` becomes the synthesized `throw`, which no mapping covers, as astro2tsx turns each top-level `return`
+    // of the frontmatter into `throw`. The thrown expression is still the user's text, so the report on it maps into
+    // the original file: `only-throw-error` reported `{ status: 404 }` and `log()`. For `$return;` the mapper writes
+    // `throw undefined`, and the report on the statement mapped to `$return;` through the end of the mapping before
+    // it. The verdict of the rule depends on a `throw` keyword that the user did not write, so the rule asks
+    // `RuleContext::is_first_token_mapper_written`. A `throw` that the user wrote is still reported.
+    let base = project_with_files(
+        "mapper-written-throw",
+        WITH_MAPPER,
+        &[(
+            "src/e.cmp",
+            "declare const id: string | undefined;\nfunction log(): void {}\nif (!id) {\n  $return { status: 404 };\n}\nif (id === 'skip') {\n  $return;\n}\nif (id === 'log') {\n  $return log();\n}\nexport function user(): never {\n  throw 'a string';\n}\n",
+        )],
+    );
+    let payload = payload_for_rules(&base, &["src/e.cmp"], &["only-throw-error"], false, true);
+    let (status, frames) = run(&payload, &["--runExternalCode"]);
+    assert_eq!(status, 0, "{frames:?}");
+    assert_eq!(
+        describe(&base, &frames),
+        ["/src/e.cmp only-throw-error \"'a string'\" labels=0 fixes=0 suggestions=0"]
     );
 }
 

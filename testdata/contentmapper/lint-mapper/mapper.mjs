@@ -4,7 +4,9 @@
 //
 // - a synthesized prefix with an unresolved import, a floating promise and a helper `__on`,
 // - the original text up to a line `//!supplemental`, mapped verbatim, except that each `$gen` becomes the synthesized
-//   call `__gen()`, which no mapping covers, as a framework replaces a name with generated code,
+//   call `__gen()`, which no mapping covers, as a framework replaces a name with generated code, and each `$return`
+//   becomes the synthesized `throw` (`throw undefined` before a `;`), which no mapping covers, as astro2tsx replaces a
+//   top-level `return` of the frontmatter,
 // - for each line `//!on NAME`, the synthesized statement `__on(() => NAME());`, mapped as one atom to NAME, as a
 //   framework maps an event handler wrapper to its attribute,
 // - for each line `//!call NAME`, the synthesized statement `NAME();`, with `NAME()` mapped as one atom to NAME,
@@ -42,13 +44,13 @@ function transform(params) {
   // [virtualStart, virtualLength, originalStart, originalLength, kind] with kind 0 = verbatim, 1 = atom
   const mappings = []
   for (let at = 0; ; ) {
-    const gen = main.indexOf('$gen', at)
-    const piece = main.slice(at, gen === -1 ? main.length : gen)
+    const match = /\$gen|\$return/.exec(main.slice(at))
+    const piece = main.slice(at, match ? at + match.index : main.length)
     if (piece.length) mappings.push([bytes(text), bytes(piece), bytes(main.slice(0, at)), bytes(piece), 0])
     text += piece
-    if (gen === -1) break
-    text += '__gen()'
-    at = gen + '$gen'.length
+    if (!match) break
+    at += match.index + match[0].length
+    text += match[0] === '$gen' ? '__gen()' : main[at] === ';' ? 'throw undefined' : 'throw'
   }
   for (const match of main.matchAll(/^\/\/!on (\w+)$/gm)) {
     const name = match[1]

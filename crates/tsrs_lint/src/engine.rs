@@ -814,6 +814,40 @@ fn original_lint_range(segments: &[Segment], range: Range) -> Option<Range> {
     )
 }
 
+/// Whether a content mapper wrote all of the text in the virtual `range`.
+///
+/// This is true if the range is not empty, no verbatim segment overlaps it, and it contains no whole atom or alias
+/// segment that is attributed to original text. A verbatim segment is a copy of the original text. A whole atom or
+/// alias in the range is the user's token in another spelling, such as `vMyDir` for `v-my-dir` or `=>` for `=&gt;`.
+/// Text in a gap between the segments has no original text. Text inside a larger atom or alias is part of code that the
+/// mapper wrote around the user's text, such as the `return (` of an event handler wrapper that the Vue mapper
+/// attributes to the tag name. An atom with an empty original range is code that the mapper wrote at one point, such as
+/// the `export default` of a component.
+///
+/// The test is half-open, unlike `segments_at`: a segment that ends where the range starts, or that starts where the
+/// range ends, does not overlap it, and an empty segment overlaps nothing. So the `throw undefined` that a mapper
+/// writes between `{` and `;` is mapper-written, although both of its ends map into the original file.
+///
+/// Rules ask this through `RuleContext::is_mapper_written` for the syntax that their verdict depends on. Public for
+/// the integration tests.
+pub fn is_mapper_written(segments: &[Segment], range: Range) -> bool {
+    // The compiler accepts only sorted segments that do not overlap, so they are also sorted by their ends.
+    range.end > range.pos
+        && !segments[segments.partition_point(|s| s.virtual_end <= range.pos)..]
+            .iter()
+            .take_while(|s| s.virtual_start < range.end)
+            .any(|s| {
+                s.virtual_end > s.virtual_start
+                    && (s.kind == SegmentKind::VERBATIM
+                        || (s.original_end > s.original_start && contains(range, s)))
+            })
+}
+
+/// Whether all of the virtual range of `segment` is in `range`.
+fn contains(range: Range, segment: &Segment) -> bool {
+    range.pos <= segment.virtual_start && segment.virtual_end <= range.end
+}
+
 /// The segments whose virtual range contains `offset`, ends included, in order.
 fn segments_at(segments: &[Segment], offset: u32) -> impl DoubleEndedIterator<Item = &Segment> {
     let after = segments.partition_point(|segment| segment.virtual_start <= offset);
@@ -861,6 +895,9 @@ fn lint_file(
 ) -> Result<Vec<Diagnostic>, String> {
     let mut diagnostics = Vec::new();
     let mut rules = Vec::with_capacity(configured.len());
+    // For `RuleContext::is_mapper_written`. `None` for a file that no content mapper produced.
+    let segments = file.span_map().map(|span_map| span_map.segments());
+    let segments = segments.as_deref();
     for config in configured {
         let start = options.debug_timings.then(Instant::now);
         let mut rule = crate::registry::create_rule(config)?;
@@ -871,6 +908,7 @@ fn lint_file(
             rule_name: &config.name,
             options,
             diagnostics: &mut diagnostics,
+            segments,
         });
         if let Some(start) = start {
             let entry = timings.entry(config.name.clone()).or_default();
@@ -900,6 +938,7 @@ fn lint_file(
                 rule_name: name,
                 options,
                 diagnostics: &mut diagnostics,
+                segments,
             };
             rule.visit(listener, node, &mut context);
             if let Some(start) = start {

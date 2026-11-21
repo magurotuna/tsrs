@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use rustc_hash::FxHashMap;
 use tsrs_core::P;
-use tsrs_lint::engine::{ConfigHost, find_tsconfig};
+use tsrs_lint::engine::{ConfigHost, find_tsconfig, is_mapper_written};
+use tsrs_lint::protocol::Range;
+use tsrs_spanmap::{Kind, Segment};
 use tsrs_vfs::{FS, vfstest, wrapvfs};
 
 #[test]
@@ -154,4 +156,74 @@ fn project_discovery_traverses_non_matching_composite_references() {
         }
     }
     assert_eq!(configs.len(), 5);
+}
+
+fn segment(
+    virtual_start: u32,
+    virtual_end: u32,
+    original_start: u32,
+    original_end: u32,
+    kind: Kind,
+) -> Segment {
+    Segment { virtual_start, virtual_end, original_start, original_end, kind, ..Default::default() }
+}
+
+#[test]
+fn mapper_written_text_is_text_without_a_verbatim_copy() {
+    // astro2tsx: original "{\n\treturn x;\n}" (the `return` at 3), virtual "{\n\tthrow  x;\n}". The mapper wrote
+    // `throw ` at [3, 9) between two verbatim segments. The report on `x` at [10, 11) maps, but the `throw` keyword
+    // that the verdict depends on is mapper-written.
+    let segments = [segment(0, 3, 0, 3, Kind::VERBATIM), segment(9, 14, 9, 14, Kind::VERBATIM)];
+    assert!(is_mapper_written(&segments, Range { pos: 3, end: 8 }));
+    assert!(is_mapper_written(&segments, Range { pos: 3, end: 9 }));
+    // The `x` and the user's indentation in front of the keyword are verbatim.
+    assert!(!is_mapper_written(&segments, Range { pos: 10, end: 11 }));
+    assert!(!is_mapper_written(&segments, Range { pos: 1, end: 3 }));
+    // One verbatim byte is enough: the range is not all mapper-written.
+    assert!(!is_mapper_written(&segments, Range { pos: 2, end: 8 }));
+    assert!(!is_mapper_written(&segments, Range { pos: 3, end: 10 }));
+    // An empty range has no text.
+    assert!(!is_mapper_written(&segments, Range { pos: 5, end: 5 }));
+    // A file whose text is all generated.
+    assert!(is_mapper_written(&[], Range { pos: 0, end: 5 }));
+    // astro2tsx: original "{\n\treturn;\n}", virtual "{\n\tthrow undefined;\n}". The report on the statement at
+    // [3, 19) starts where the first segment ends and ends in the second one, so it maps to `return;`. Its keyword
+    // at [3, 8) is mapper-written, and the statement is not, because of its `;`.
+    let segments = [segment(0, 3, 0, 3, Kind::VERBATIM), segment(18, 21, 9, 12, Kind::VERBATIM)];
+    assert!(is_mapper_written(&segments, Range { pos: 3, end: 8 }));
+    assert!(!is_mapper_written(&segments, Range { pos: 3, end: 19 }));
+}
+
+#[test]
+fn text_inside_atoms_and_empty_segments_is_mapper_written() {
+    // The Vue mapper: an event handler wrapper `: (...) => {\nreturn (` is one atom that is attributed to the tag
+    // name, and `select(item)` is verbatim. Virtual: atom [10, 40), verbatim [40, 52), atom [52, 60).
+    let segments = [
+        segment(10, 40, 1, 3, Kind::ATOM),
+        segment(40, 52, 20, 32, Kind::VERBATIM),
+        segment(52, 60, 1, 3, Kind::ATOM),
+    ];
+    assert!(is_mapper_written(&segments, Range { pos: 32, end: 38 }));
+    assert!(!is_mapper_written(&segments, Range { pos: 40, end: 46 }));
+    assert!(is_mapper_written(&segments, Range { pos: 52, end: 53 }));
+    // A whole atom or alias in the range is the user's token in another spelling: the Vue mapper writes `=>` for
+    // `=&gt;` in an attribute, and `onClick` for `click`. Text inside it is still mapper-written.
+    assert!(!is_mapper_written(&[segment(20, 22, 5, 10, Kind::ATOM)], Range { pos: 20, end: 22 }));
+    assert!(!is_mapper_written(&[segment(0, 7, 1, 6, Kind::ALIAS)], Range { pos: 0, end: 7 }));
+    assert!(is_mapper_written(&[segment(0, 7, 1, 6, Kind::ALIAS)], Range { pos: 1, end: 4 }));
+    // An atom with an empty original range is code that the mapper wrote at one point, such as the `export default`
+    // of a Vue component.
+    assert!(is_mapper_written(&[segment(0, 14, 3, 3, Kind::ATOM)], Range { pos: 0, end: 14 }));
+    // An empty verbatim segment (a navigation anchor of the Vue mapper) at the start of, inside, and at the end of
+    // generated text covers no text.
+    let anchors = [
+        segment(0, 4, 0, 4, Kind::VERBATIM),
+        segment(4, 4, 7, 7, Kind::VERBATIM),
+        segment(6, 6, 8, 8, Kind::VERBATIM),
+        segment(9, 9, 9, 9, Kind::VERBATIM),
+        segment(9, 12, 9, 12, Kind::VERBATIM),
+    ];
+    assert!(is_mapper_written(&anchors, Range { pos: 4, end: 9 }));
+    assert!(!is_mapper_written(&anchors, Range { pos: 4, end: 10 }));
+    assert!(!is_mapper_written(&anchors, Range { pos: 3, end: 9 }));
 }
